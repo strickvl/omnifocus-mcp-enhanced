@@ -22,6 +22,9 @@ export interface EditItemParams {
   
   // Task-specific fields
   newStatus?: TaskStatus;       // New status for tasks (incomplete, completed, dropped)
+  newProjectName?: string;      // Name of project to move task to (empty string or "Inbox" for inbox)
+  newParentTaskId?: string;     // ID of parent task to make this a subtask of
+  newParentTaskName?: string;   // Name of parent task to make this a subtask of
   addTags?: string[];           // Tags to add to the task
   removeTags?: string[];        // Tags to remove from the task
   replaceTags?: string[];       // Tags to replace all existing tags with
@@ -30,6 +33,34 @@ export interface EditItemParams {
   newSequential?: boolean;      // Whether the project should be sequential
   newFolderName?: string;       // New folder to move the project to
   newProjectStatus?: ProjectStatus; // New status for projects
+}
+
+/**
+ * Validate task movement parameters to prevent conflicts
+ */
+function validateTaskMovementParams(params: EditItemParams): {valid: boolean, error?: string} {
+  // Only validate if this is a task
+  if (params.itemType !== 'task') {
+    return { valid: true };
+  }
+
+  // Check if both parentTaskId and parentTaskName are provided
+  if (params.newParentTaskId && params.newParentTaskName) {
+    return {
+      valid: false,
+      error: "Cannot specify both newParentTaskId and newParentTaskName. Please use only one."
+    };
+  }
+
+  // Check if parent task is specified along with newProjectName
+  if ((params.newParentTaskId || params.newParentTaskName) && params.newProjectName) {
+    return {
+      valid: false,
+      error: "Cannot specify both parent task and project. Subtasks inherit project from their parent."
+    };
+  }
+
+  return { valid: true };
 }
 
 /**
@@ -247,8 +278,74 @@ function generateAppleScript(params: EditItemParams): string {
 `;
       }
     }
+
+    // Task movement operations
+    // Handle moving task to a different project
+    if (params.newProjectName !== undefined) {
+      const projectName = params.newProjectName.replace(/['"\\]/g, '\\$&');
+
+      // Check for inbox movement
+      if (params.newProjectName === "" || params.newProjectName.toLowerCase() === "inbox") {
+        script += `
+          -- Move task to inbox (set assigned container to missing value)
+          set assigned container of foundItem to missing value
+          set end of changedProperties to "moved to inbox"
+`;
+      } else {
+        script += `
+          -- Move task to project
+          set destProject to missing value
+          try
+            set destProject to first flattened project where name = "${projectName}"
+          end try
+
+          if destProject is missing value then
+            return "{\\\"success\\\":false,\\\"error\\\":\\\"Project not found: ${projectName}\\\"}"
+          end if
+
+          set assigned container of foundItem to destProject
+          set end of changedProperties to "moved to project"
+`;
+      }
+    }
+
+    // Handle moving task to become subtask of another task (by ID)
+    if (params.newParentTaskId !== undefined) {
+      const parentTaskId = params.newParentTaskId.replace(/['"\\]/g, '\\$&');
+      script += `
+          -- Move task to become subtask (by parent ID)
+          set parentTask to missing value
+          try
+            set parentTask to first flattened task where id = "${parentTaskId}"
+          end try
+
+          if parentTask is missing value then
+            return "{\\\"success\\\":false,\\\"error\\\":\\\"Parent task not found with ID: ${parentTaskId}\\\"}"
+          end if
+
+          move foundItem to end of tasks of parentTask
+          set end of changedProperties to "moved to parent task"
+`;
+    } else if (params.newParentTaskName !== undefined) {
+      // Handle moving task to become subtask (by name)
+      const parentTaskName = params.newParentTaskName.replace(/['"\\]/g, '\\$&');
+      script += `
+          -- Move task to become subtask (by parent name)
+          set parentTask to missing value
+          try
+            set parentTask to first flattened task where name = "${parentTaskName}"
+          end try
+
+          if parentTask is missing value then
+            return "{\\\"success\\\":false,\\\"error\\\":\\\"Parent task not found with name: ${parentTaskName}\\\"}"
+          end if
+
+          move foundItem to end of tasks of parentTask
+          set end of changedProperties to "moved to parent task"
+`;
+    }
   }
-  
+
   // Project-specific updates
   if (itemType === 'project') {
     // Update sequential status
@@ -332,6 +429,15 @@ export async function editItem(params: EditItemParams): Promise<{
   error?: string
 }> {
   try {
+    // Validate task movement parameters
+    const validation = validateTaskMovementParams(params);
+    if (!validation.valid) {
+      return {
+        success: false,
+        error: validation.error
+      };
+    }
+
     // Generate AppleScript
     const script = generateAppleScript(params);
     
