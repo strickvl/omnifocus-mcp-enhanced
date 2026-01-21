@@ -1,6 +1,28 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { writeFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 const execAsync = promisify(exec);
+
+/**
+ * Execute AppleScript safely using a temp file.
+ * This avoids shell escaping issues with special characters (quotes, etc.)
+ */
+async function executeAppleScript(script: string): Promise<{ stdout: string; stderr: string }> {
+  const tempFile = join(tmpdir(), `applescript_${Date.now()}_${Math.random().toString(36).slice(2)}.scpt`);
+  try {
+    writeFileSync(tempFile, script);
+    const result = await execAsync(`osascript ${tempFile}`);
+    return result;
+  } finally {
+    try {
+      unlinkSync(tempFile);
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
 
 // Interface for item removal parameters
 export interface RemoveItemParams {
@@ -14,8 +36,8 @@ export interface RemoveItemParams {
  */
 function generateAppleScript(params: RemoveItemParams): string {
   // Sanitize and prepare parameters for AppleScript
-  const id = params.id?.replace(/['"\\]/g, '\\$&') || ''; // Escape quotes and backslashes
-  const name = params.name?.replace(/['"\\]/g, '\\$&') || '';
+  const id = params.id?.replace(/["\\]/g, '\\$&') || ''; // Escape quotes and backslashes
+  const name = params.name?.replace(/["\\]/g, '\\$&') || '';
   const itemType = params.itemType;
   
   // Verify we have at least one identifier
@@ -102,8 +124,8 @@ export async function removeItem(params: RemoveItemParams): Promise<{success: bo
     const scriptPreview = script.split('\n').slice(0, 10).join('\n') + '\n...';
     console.error("AppleScript preview:\n", scriptPreview);
     
-    // Execute AppleScript directly
-    const { stdout, stderr } = await execAsync(`osascript -e '${script}'`);
+    // Execute AppleScript via temp file (avoids shell escaping issues)
+    const { stdout, stderr } = await executeAppleScript(script);
     
     if (stderr) {
       console.error("AppleScript stderr:", stderr);

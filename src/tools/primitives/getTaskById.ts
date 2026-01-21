@@ -1,6 +1,28 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { writeFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 const execAsync = promisify(exec);
+
+/**
+ * Execute AppleScript safely using a temp file.
+ * This avoids shell escaping issues with special characters (quotes, etc.)
+ */
+async function executeAppleScript(script: string): Promise<{ stdout: string; stderr: string }> {
+  const tempFile = join(tmpdir(), `applescript_${Date.now()}_${Math.random().toString(36).slice(2)}.scpt`);
+  try {
+    writeFileSync(tempFile, script);
+    const result = await execAsync(`osascript ${tempFile}`);
+    return result;
+  } finally {
+    try {
+      unlinkSync(tempFile);
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
 
 // Interface for task lookup parameters
 export interface GetTaskByIdParams {
@@ -31,8 +53,8 @@ export interface TaskInfo {
  * Generate AppleScript to get task information by ID or name
  */
 function generateGetTaskScript(params: GetTaskByIdParams): string {
-  const taskId = params.taskId?.replace(/['"\\]/g, '\\$&') || '';
-  const taskName = params.taskName?.replace(/['"\\]/g, '\\$&') || '';
+  const taskId = params.taskId?.replace(/["\\]/g, '\\$&') || '';
+  const taskName = params.taskName?.replace(/["\\]/g, '\\$&') || '';
   
   let script = `
   try
@@ -147,8 +169,8 @@ export async function getTaskById(params: GetTaskByIdParams): Promise<{success: 
     console.error(script);
     console.error("Executing getTaskById AppleScript...");
     
-    // Execute AppleScript
-    const { stdout, stderr } = await execAsync(`osascript -e '${script}'`);
+    // Execute AppleScript via temp file (avoids shell escaping issues)
+    const { stdout, stderr } = await executeAppleScript(script);
     
     if (stderr) {
       console.error("AppleScript stderr:", stderr);
