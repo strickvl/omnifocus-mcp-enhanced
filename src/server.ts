@@ -11,6 +11,7 @@ import * as removeItemTool from './tools/definitions/removeItem.js';
 import * as editItemTool from './tools/definitions/editItem.js';
 import * as batchAddItemsTool from './tools/definitions/batchAddItems.js';
 import * as batchRemoveItemsTool from './tools/definitions/batchRemoveItems.js';
+import * as batchEditItemsTool from './tools/definitions/batchEditItems.js';
 import * as getTaskByIdTool from './tools/definitions/getTaskById.js';
 import * as getTodayCompletedTasksTool from './tools/definitions/getTodayCompletedTasks.js';
 // Import perspective tools
@@ -80,6 +81,12 @@ server.tool(
   batchRemoveItemsTool.handler
 );
 
+server.tool(
+  "batch_edit_items",
+  "Edit multiple tasks or projects in OmniFocus in a single operation",
+  batchEditItemsTool.schema.shape,
+  batchEditItemsTool.handler
+);
 
 server.tool(
   "get_task_by_id",

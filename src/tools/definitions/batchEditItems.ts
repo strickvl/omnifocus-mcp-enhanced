@@ -1,0 +1,114 @@
+import { z } from 'zod';
+import { batchEditItems, BatchEditItemsParams } from '../primitives/batchEditItems.js';
+import { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
+
+// Item schema matches editItem schema exactly
+const editItemSchema = z.object({
+  // Item identification (at least one required)
+  id: z.string().optional().describe("The ID of the task or project to edit"),
+  name: z.string().optional().describe("The name of the task or project to edit (as fallback if ID not provided)"),
+  itemType: z.enum(['task', 'project']).describe("Type of item to edit ('task' or 'project')"),
+
+  // Common editable fields
+  newName: z.string().optional().describe("New name for the item"),
+  newNote: z.string().optional().describe("New note for the item"),
+  newDueDate: z.string().optional().describe("New due date in ISO format (YYYY-MM-DD or full ISO date); set to empty string to clear"),
+  newDeferDate: z.string().optional().describe("New defer date in ISO format (YYYY-MM-DD or full ISO date); set to empty string to clear"),
+  newFlagged: z.boolean().optional().describe("Set flagged status (set to false for no flag, true for flag)"),
+  newEstimatedMinutes: z.number().optional().describe("New estimated minutes"),
+
+  // Task-specific fields
+  newStatus: z.enum(['incomplete', 'completed', 'dropped']).optional().describe("New status for tasks (incomplete, completed, dropped)"),
+  newProjectName: z.string().optional().describe(
+    "Name of project to move the task to. Use empty string or 'Inbox' to move to inbox."
+  ),
+  newParentTaskId: z.string().optional().describe(
+    "ID of parent task to make this a subtask of"
+  ),
+  newParentTaskName: z.string().optional().describe(
+    "Name of parent task to make this a subtask of (alternative to ID)"
+  ),
+  addTags: z.array(z.string()).optional().describe("Tags to add to the task"),
+  removeTags: z.array(z.string()).optional().describe("Tags to remove from the task"),
+  replaceTags: z.array(z.string()).optional().describe("Tags to replace all existing tags with"),
+
+  // Project-specific fields
+  newSequential: z.boolean().optional().describe("Whether the project should be sequential"),
+  newFolderName: z.string().optional().describe("New folder to move the project to"),
+  newProjectStatus: z.enum(['active', 'completed', 'dropped', 'onHold']).optional().describe("New status for projects")
+});
+
+export const schema = z.object({
+  items: z.array(editItemSchema).describe("Array of items (tasks or projects) to edit with their new values")
+});
+
+export async function handler(args: z.infer<typeof schema>, extra: RequestHandlerExtra) {
+  try {
+    // Validate that each item has at least an ID or name
+    for (const item of args.items) {
+      if (!item.id && !item.name) {
+        return {
+          content: [{
+            type: "text" as const,
+            text: "Each item must have either id or name provided to edit it."
+          }],
+          isError: true
+        };
+      }
+    }
+
+    // Call the batchEditItems function
+    const result = await batchEditItems(args.items as BatchEditItemsParams[]);
+
+    if (result.success) {
+      const successCount = result.results.filter(r => r.success).length;
+      const failureCount = result.results.filter(r => !r.success).length;
+
+      let message = `✅ Successfully updated ${successCount} items.`;
+
+      if (failureCount > 0) {
+        message += ` ⚠️ Failed to update ${failureCount} items.`;
+      }
+
+      // Include details about edited items
+      const details = result.results.map((item, index) => {
+        if (item.success) {
+          const itemType = args.items[index].itemType;
+          const itemName = item.name || args.items[index].name || args.items[index].id;
+          const changedProps = item.changedProperties ? ` (${item.changedProperties})` : '';
+          return `- ✅ ${itemType}: "${itemName}"${changedProps}`;
+        } else {
+          const itemType = args.items[index].itemType;
+          const identifier = args.items[index].id || args.items[index].name;
+          return `- ❌ ${itemType}: "${identifier}" - Error: ${item.error}`;
+        }
+      }).join('\n');
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: `${message}\n\n${details}`
+        }]
+      };
+    } else {
+      // Batch operation failed completely
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Failed to process batch edit: ${result.error}`
+        }],
+        isError: true
+      };
+    }
+  } catch (err: unknown) {
+    const error = err as Error;
+    console.error(`Tool execution error: ${error.message}`);
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Error processing batch edit: ${error.message}`
+      }],
+      isError: true
+    };
+  }
+}
