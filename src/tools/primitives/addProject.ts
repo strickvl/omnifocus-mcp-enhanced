@@ -1,6 +1,34 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { writeFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import {
+  parseIsoDateInput,
+  appleScriptDateExpr,
+  APPLESCRIPT_DATE_HELPERS,
+  IsoDateParts
+} from '../../utils/omnifocusDate.js';
 const execAsync = promisify(exec);
+
+/**
+ * Execute AppleScript safely using a temp file.
+ * This avoids shell escaping issues with special characters (quotes, etc.)
+ */
+async function executeAppleScript(script: string): Promise<{ stdout: string; stderr: string }> {
+  const tempFile = join(tmpdir(), `applescript_${Date.now()}_${Math.random().toString(36).slice(2)}.scpt`);
+  try {
+    writeFileSync(tempFile, script);
+    const result = await execAsync(`osascript ${tempFile}`);
+    return result;
+  } finally {
+    try {
+      unlinkSync(tempFile);
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
 
 // Interface for project creation parameters
 export interface AddProjectParams {
@@ -16,22 +44,32 @@ export interface AddProjectParams {
 }
 
 /**
+ * Internal params with pre-parsed date parts
+ */
+interface ResolvedProjectParams extends Omit<AddProjectParams, 'dueDate' | 'deferDate'> {
+  dueDateParts?: IsoDateParts;
+  deferDateParts?: IsoDateParts;
+}
+
+/**
  * Generate pure AppleScript for project creation
  */
-function generateAppleScript(params: AddProjectParams): string {
+function generateAppleScript(params: ResolvedProjectParams): string {
   // Sanitize and prepare parameters for AppleScript
-  const name = params.name.replace(/['"\\]/g, '\\$&'); // Escape quotes and backslashes
-  const note = params.note?.replace(/['"\\]/g, '\\$&') || '';
-  const dueDate = params.dueDate || '';
-  const deferDate = params.deferDate || '';
+  const name = params.name.replace(/["\\]/g, '\\$&'); // Escape quotes and backslashes
+  const note = params.note?.replace(/["\\]/g, '\\$&') || '';
   const flagged = params.flagged === true;
   const estimatedMinutes = params.estimatedMinutes?.toString() || '';
   const tags = params.tags || [];
-  const folderName = params.folderName?.replace(/['"\\]/g, '\\$&') || '';
+  const folderName = params.folderName?.replace(/["\\]/g, '\\$&') || '';
   const sequential = params.sequential === true;
-  
+
+  // Check if we need the date helper function
+  const needsDateHelper = params.dueDateParts || params.deferDateParts;
+
   // Construct AppleScript with error handling
-  let script = `
+  let script = needsDateHelper ? APPLESCRIPT_DATE_HELPERS : '';
+  script += `
   try
     tell application "OmniFocus"
       tell front document
@@ -48,15 +86,11 @@ function generateAppleScript(params: AddProjectParams): string {
             return "{\\\"success\\\":false,\\\"error\\\":\\\"Folder not found: ${folderName}\\\"}"
           end try
         end if
-        
+
         -- Set project properties
         ${note ? `set note of newProject to "${note}"` : ''}
-        ${dueDate ? `
-          set due date of newProject to (current date) + (time to GMT)
-          set due date of newProject to date "${dueDate}"` : ''}
-        ${deferDate ? `
-          set defer date of newProject to (current date) + (time to GMT)
-          set defer date of newProject to date "${deferDate}"` : ''}
+        ${params.dueDateParts ? `set due date of newProject to ${appleScriptDateExpr(params.dueDateParts)}` : ''}
+        ${params.deferDateParts ? `set defer date of newProject to ${appleScriptDateExpr(params.deferDateParts)}` : ''}
         ${flagged ? `set flagged of newProject to true` : ''}
         ${estimatedMinutes ? `set estimated minutes of newProject to ${estimatedMinutes}` : ''}
         ${`set sequential of newProject to ${sequential}`}
@@ -66,7 +100,7 @@ function generateAppleScript(params: AddProjectParams): string {
         
         -- Add tags if provided
         ${tags.length > 0 ? tags.map(tag => {
-          const sanitizedTag = tag.replace(/['"\\]/g, '\\$&');
+          const sanitizedTag = tag.replace(/["\\]/g, '\\$&');
           return `
           try
             set theTag to first flattened tag where name = "${sanitizedTag}"
@@ -93,13 +127,52 @@ function generateAppleScript(params: AddProjectParams): string {
  */
 export async function addProject(params: AddProjectParams): Promise<{success: boolean, projectId?: string, error?: string}> {
   try {
+    // Parse dates in TypeScript (avoids AppleScript's locale-ambiguous parsing)
+    let dueDateParts: IsoDateParts | undefined;
+    let deferDateParts: IsoDateParts | undefined;
+
+    if (params.dueDate) {
+      try {
+        dueDateParts = parseIsoDateInput(params.dueDate);
+      } catch (dateError: any) {
+        return {
+          success: false,
+          error: `Invalid dueDate: ${dateError.message}`
+        };
+      }
+    }
+
+    if (params.deferDate) {
+      try {
+        deferDateParts = parseIsoDateInput(params.deferDate);
+      } catch (dateError: any) {
+        return {
+          success: false,
+          error: `Invalid deferDate: ${dateError.message}`
+        };
+      }
+    }
+
+    // Build resolved params with parsed dates
+    const resolvedParams: ResolvedProjectParams = {
+      name: params.name,
+      note: params.note,
+      flagged: params.flagged,
+      estimatedMinutes: params.estimatedMinutes,
+      tags: params.tags,
+      folderName: params.folderName,
+      sequential: params.sequential,
+      dueDateParts,
+      deferDateParts
+    };
+
     // Generate AppleScript
-    const script = generateAppleScript(params);
+    const script = generateAppleScript(resolvedParams);
     
     console.error("Executing AppleScript directly...");
     
-    // Execute AppleScript directly
-    const { stdout, stderr } = await execAsync(`osascript -e '${script}'`);
+    // Execute AppleScript via temp file (avoids shell escaping issues)
+    const { stdout, stderr } = await executeAppleScript(script);
     
     if (stderr) {
       console.error("AppleScript stderr:", stderr);

@@ -1,6 +1,34 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { writeFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import {
+  parseIsoDateInput,
+  appleScriptDateExpr,
+  APPLESCRIPT_DATE_HELPERS,
+  IsoDateParts
+} from '../../utils/omnifocusDate.js';
 const execAsync = promisify(exec);
+
+/**
+ * Execute AppleScript safely using a temp file.
+ * This avoids shell escaping issues with special characters (quotes, etc.)
+ */
+async function executeAppleScript(script: string): Promise<{ stdout: string; stderr: string }> {
+  const tempFile = join(tmpdir(), `applescript_${Date.now()}_${Math.random().toString(36).slice(2)}.scpt`);
+  try {
+    writeFileSync(tempFile, script);
+    const result = await execAsync(`osascript ${tempFile}`);
+    return result;
+  } finally {
+    try {
+      unlinkSync(tempFile);
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
 
 // Status options for tasks and projects
 type TaskStatus = 'incomplete' | 'completed' | 'dropped';
@@ -36,6 +64,16 @@ export interface EditItemParams {
 }
 
 /**
+ * Internal params with pre-parsed date parts
+ */
+interface ResolvedEditParams extends Omit<EditItemParams, 'newDueDate' | 'newDeferDate'> {
+  newDueDate?: string;            // Keep for "clear" check (empty string)
+  newDeferDate?: string;          // Keep for "clear" check (empty string)
+  newDueDateParts?: IsoDateParts;
+  newDeferDateParts?: IsoDateParts;
+}
+
+/**
  * Validate task movement parameters to prevent conflicts
  */
 function validateTaskMovementParams(params: EditItemParams): {valid: boolean, error?: string} {
@@ -66,19 +104,24 @@ function validateTaskMovementParams(params: EditItemParams): {valid: boolean, er
 /**
  * Generate pure AppleScript for item editing
  */
-function generateAppleScript(params: EditItemParams): string {
+function generateAppleScript(params: ResolvedEditParams): string {
   // Sanitize and prepare parameters for AppleScript
-  const id = params.id?.replace(/['"\\]/g, '\\$&') || ''; // Escape quotes and backslashes
-  const name = params.name?.replace(/['"\\]/g, '\\$&') || '';
+  // Note: Only escape double quotes and backslashes. Single quotes don't need escaping in AppleScript strings.
+  const id = params.id?.replace(/["\\]/g, '\\$&') || '';
+  const name = params.name?.replace(/["\\]/g, '\\$&') || '';
   const itemType = params.itemType;
-  
+
   // Verify we have at least one identifier
   if (!id && !name) {
     return `return "{\\\"success\\\":false,\\\"error\\\":\\\"Either id or name must be provided\\\"}"`;
   }
-  
+
+  // Check if we need the date helper function
+  const needsDateHelper = params.newDueDateParts || params.newDeferDateParts;
+
   // Construct AppleScript with error handling
-  let script = `
+  let script = needsDateHelper ? APPLESCRIPT_DATE_HELPERS : '';
+  script += `
   try
     tell application "OmniFocus"
       tell front document
@@ -128,7 +171,7 @@ function generateAppleScript(params: EditItemParams): string {
   if (params.newName !== undefined) {
     script += `
           -- Update name
-          set name of foundItem to "${params.newName.replace(/['"\\]/g, '\\$&')}"
+          set name of foundItem to "${params.newName.replace(/["\\]/g, '\\$&')}"
           set end of changedProperties to "name"
 `;
   }
@@ -136,7 +179,7 @@ function generateAppleScript(params: EditItemParams): string {
   if (params.newNote !== undefined) {
     script += `
           -- Update note
-          set note of foundItem to "${params.newNote.replace(/['"\\]/g, '\\$&')}"
+          set note of foundItem to "${params.newNote.replace(/["\\]/g, '\\$&')}"
           set end of changedProperties to "note"
 `;
   }
@@ -148,15 +191,15 @@ function generateAppleScript(params: EditItemParams): string {
           set due date of foundItem to missing value
           set end of changedProperties to "due date"
 `;
-    } else {
+    } else if (params.newDueDateParts) {
       script += `
           -- Update due date
-          set due date of foundItem to (current date) + ((((date "${params.newDueDate}") - (current date)) / days) * days)
+          set due date of foundItem to ${appleScriptDateExpr(params.newDueDateParts)}
           set end of changedProperties to "due date"
 `;
     }
   }
-  
+
   if (params.newDeferDate !== undefined) {
     if (params.newDeferDate === "") {
       script += `
@@ -164,10 +207,10 @@ function generateAppleScript(params: EditItemParams): string {
           set defer date of foundItem to missing value
           set end of changedProperties to "defer date"
 `;
-    } else {
+    } else if (params.newDeferDateParts) {
       script += `
           -- Update defer date
-          set defer date of foundItem to (current date) + ((((date "${params.newDeferDate}") - (current date)) / days) * days)
+          set defer date of foundItem to ${appleScriptDateExpr(params.newDeferDateParts)}
           set end of changedProperties to "defer date"
 `;
     }
@@ -217,7 +260,7 @@ function generateAppleScript(params: EditItemParams): string {
     
     // Handle tag operations
     if (params.replaceTags && params.replaceTags.length > 0) {
-      const tagsList = params.replaceTags.map(tag => `"${tag.replace(/['"\\]/g, '\\$&')}"`).join(", ");
+      const tagsList = params.replaceTags.map(tag => `"${tag.replace(/["\\]/g, '\\$&')}"`).join(", ");
       script += `
           -- Replace all tags
           set tagNames to {${tagsList}}
@@ -244,7 +287,7 @@ function generateAppleScript(params: EditItemParams): string {
     } else {
       // Add tags if specified
       if (params.addTags && params.addTags.length > 0) {
-        const tagsList = params.addTags.map(tag => `"${tag.replace(/['"\\]/g, '\\$&')}"`).join(", ");
+        const tagsList = params.addTags.map(tag => `"${tag.replace(/["\\]/g, '\\$&')}"`).join(", ");
         script += `
           -- Add tags
           set tagNames to {${tagsList}}
@@ -264,7 +307,7 @@ function generateAppleScript(params: EditItemParams): string {
       
       // Remove tags if specified
       if (params.removeTags && params.removeTags.length > 0) {
-        const tagsList = params.removeTags.map(tag => `"${tag.replace(/['"\\]/g, '\\$&')}"`).join(", ");
+        const tagsList = params.removeTags.map(tag => `"${tag.replace(/["\\]/g, '\\$&')}"`).join(", ");
         script += `
           -- Remove tags
           set tagNames to {${tagsList}}
@@ -282,7 +325,7 @@ function generateAppleScript(params: EditItemParams): string {
     // Task movement operations
     // Handle moving task to a different project
     if (params.newProjectName !== undefined) {
-      const projectName = params.newProjectName.replace(/['"\\]/g, '\\$&');
+      const projectName = params.newProjectName.replace(/["\\]/g, '\\$&');
 
       // Check for inbox movement
       if (params.newProjectName === "" || params.newProjectName.toLowerCase() === "inbox") {
@@ -311,7 +354,7 @@ function generateAppleScript(params: EditItemParams): string {
 
     // Handle moving task to become subtask of another task (by ID)
     if (params.newParentTaskId !== undefined) {
-      const parentTaskId = params.newParentTaskId.replace(/['"\\]/g, '\\$&');
+      const parentTaskId = params.newParentTaskId.replace(/["\\]/g, '\\$&');
       script += `
           -- Move task to become subtask (by parent ID)
           set parentTask to missing value
@@ -328,7 +371,7 @@ function generateAppleScript(params: EditItemParams): string {
 `;
     } else if (params.newParentTaskName !== undefined) {
       // Handle moving task to become subtask (by name)
-      const parentTaskName = params.newParentTaskName.replace(/['"\\]/g, '\\$&');
+      const parentTaskName = params.newParentTaskName.replace(/["\\]/g, '\\$&');
       script += `
           -- Move task to become subtask (by parent name)
           set parentTask to missing value
@@ -372,7 +415,7 @@ function generateAppleScript(params: EditItemParams): string {
     
     // Move to a new folder
     if (params.newFolderName !== undefined) {
-      const folderName = params.newFolderName.replace(/['"\\]/g, '\\$&');
+      const folderName = params.newFolderName.replace(/["\\]/g, '\\$&');
       script += `
           -- Move to new folder
           set destFolder to missing value
@@ -422,9 +465,9 @@ function generateAppleScript(params: EditItemParams): string {
  * Edit a task or project in OmniFocus
  */
 export async function editItem(params: EditItemParams): Promise<{
-  success: boolean, 
-  id?: string, 
-  name?: string, 
+  success: boolean,
+  id?: string,
+  name?: string,
   changedProperties?: string,
   error?: string
 }> {
@@ -438,8 +481,42 @@ export async function editItem(params: EditItemParams): Promise<{
       };
     }
 
+    // Parse dates in TypeScript (avoids AppleScript's locale-ambiguous parsing)
+    let newDueDateParts: IsoDateParts | undefined;
+    let newDeferDateParts: IsoDateParts | undefined;
+
+    // Only parse non-empty dates (empty string means "clear the date")
+    if (params.newDueDate && params.newDueDate !== "") {
+      try {
+        newDueDateParts = parseIsoDateInput(params.newDueDate);
+      } catch (dateError: any) {
+        return {
+          success: false,
+          error: `Invalid newDueDate: ${dateError.message}`
+        };
+      }
+    }
+
+    if (params.newDeferDate && params.newDeferDate !== "") {
+      try {
+        newDeferDateParts = parseIsoDateInput(params.newDeferDate);
+      } catch (dateError: any) {
+        return {
+          success: false,
+          error: `Invalid newDeferDate: ${dateError.message}`
+        };
+      }
+    }
+
+    // Build resolved params with parsed dates
+    const resolvedParams: ResolvedEditParams = {
+      ...params,
+      newDueDateParts,
+      newDeferDateParts
+    };
+
     // Generate AppleScript
-    const script = generateAppleScript(params);
+    const script = generateAppleScript(resolvedParams);
     
     console.error("Executing AppleScript for editing...");
     console.error(`Item type: ${params.itemType}, ID: ${params.id || 'not provided'}, Name: ${params.name || 'not provided'}`);
@@ -448,8 +525,8 @@ export async function editItem(params: EditItemParams): Promise<{
     const scriptPreview = script.split('\n').slice(0, 10).join('\n') + '\n...';
     console.error("AppleScript preview:\n", scriptPreview);
     
-    // Execute AppleScript directly
-    const { stdout, stderr } = await execAsync(`osascript -e '${script}'`);
+    // Execute AppleScript via temp file (avoids shell escaping issues)
+    const { stdout, stderr } = await executeAppleScript(script);
     
     if (stderr) {
       console.error("AppleScript stderr:", stderr);
