@@ -23,6 +23,12 @@ test('read-write MCP registers mutations, persists exact replay, and annotates d
  const writer=createWriteExecutor({directory,runner:async()=>{writes++;return JSON.stringify({ok:true,item:{type:'tag',id:'tag1',name:'test',nameTruncated:false,parentTagId:null,status:'active'}});}});
  await connection(createRemoteServer({writer}),async client=>{
   const {tools}=await client.listTools();assert.equal(tools.length,11);
+  for (const name of ['create_task','update_task','create_project','update_project','create_tag','update_tag','delete_item']) {
+    const tool=tools.find(x=>x.name===name);
+    assert.ok(tool.inputSchema.properties.idempotencyKey, name+' must publish idempotencyKey');
+    assert.ok(tool.inputSchema.required.includes('idempotencyKey'));
+  }
+  for (const field of ['type','itemId','confirmId']) assert.ok(tools.find(x=>x.name==='delete_item').inputSchema.required.includes(field));
   const deletion=tools.find(x=>x.name==='delete_item');assert.equal(deletion.annotations.destructiveHint,true);assert.equal(deletion.annotations.readOnlyHint,false);
   const args={name:'test',idempotencyKey:'test-action-001'};
   const first=await client.callTool({name:'create_tag',arguments:args});assert.equal(first.isError,false);

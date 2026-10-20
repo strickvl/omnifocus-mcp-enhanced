@@ -9,6 +9,13 @@ export interface RemoteServerOptions extends ReadOnlyOptions {
   writer?: ReturnType<typeof createWriteExecutor>;
 }
 
+function publishedInputSchema(schema: z.ZodTypeAny): z.AnyZodObject {
+  let input = schema;
+  while (input instanceof z.ZodEffects) input = input.innerType();
+  if (!(input instanceof z.ZodObject)) throw new Error('Mutation input must be an object');
+  return input;
+}
+
 export function createRemoteServer(options: RemoteServerOptions = {}) {
   const server = createReadOnlyServer(options);
   server.registerTool('list_items', {
@@ -39,7 +46,7 @@ export function createRemoteServer(options: RemoteServerOptions = {}) {
     server.registerTool(name, {
       title: name.replaceAll('_', ' '),
       description: `${descriptions[name]} Required idempotencyKey: generate a unique stable key for this user action and reuse it unchanged on retries. If outcome is unknown, do not use a new key to retry; check get_write_status and inspect the database. A key does not replace user authorization.`,
-      inputSchema: mutationSchemas[name],
+      inputSchema: publishedInputSchema(mutationSchemas[name]),
       annotations: {readOnlyHint:false, destructiveHint:name.startsWith('update_') || name==='delete_item', openWorldHint:false, idempotentHint:true},
       _meta: {securitySchemes:[{type:'oauth2',scopes:[]}]},
     }, async (args: unknown) => {
