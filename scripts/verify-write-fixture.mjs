@@ -1,26 +1,17 @@
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {mkdir,writeFile} from 'node:fs/promises';
 import {createWriteExecutor} from '../dist/remote/writeExecutor.js';
 import {queryTasks,getTask} from '../dist/remote/automation.js';
 import {listItems} from '../dist/remote/catalog.js';
+import {createWriteFixture} from './writeFixture.mjs';
 
 const directory=process.env.OMNIFOCUS_TEST_DIRECTORY;
 if(!directory?.startsWith('/'))throw new Error('Set OMNIFOCUS_TEST_DIRECTORY to a private absolute fixture directory');
-const run=randomUUID(); const prefix=`OmniFocus MCP verification ${run}`;
-await mkdir(directory,{recursive:true,mode:0o700});
 const ledger=`${directory}/ledger`;
 let writer=createWriteExecutor({directory:ledger});
-const manifest={run,prefix,created:[],checks:[]};
-const save=()=>writeFile(`${directory}/${run}.json`,JSON.stringify(manifest,null,2),{mode:0o600});
-async function mutate(name,args,key=randomUUID()) {
- const input={...args,idempotencyKey:key};
- const result=await writer.execute(name,input);
- if(!result.ok)throw new Error(`${name}: ${JSON.stringify(result)}`);
- return result;
-}
-async function created(name,args,type){const result=await mutate(name,args);manifest.created.push({type,id:result.item.id,deleted:false});await save();return result.item.id;}
-async function remove(type,id){await mutate('delete_item',{type,itemId:id,confirmId:id,includeChildren:true});manifest.created.find(x=>x.type===type&&x.id===id).deleted=true;await save();}
+const fixture=await createWriteFixture({directory,execute:(name,input)=>writer.execute(name,input)});
+const {manifest,manifestPath,save,mutate,created,remove}=fixture;
+const {prefix}=manifest;
 try {
  const projectId=await created('create_project',{name:prefix,note:'Disposable integration fixture',sequential:false},'project');
  const tagId=await created('create_tag',{name:prefix},'tag');
@@ -32,8 +23,7 @@ try {
  assert.equal(tag.item.status,'onHold');assert.equal(tag.item.parentTagId,null);
  await mutate('update_tag',{tagId:secondTagId,status:'active',parentTagId:tagId});
  const key=randomUUID();const args={name:`${prefix} task`,projectId,note:'Quotes " \\ Unicode 日本語\nSecond line',flagged:true,tagIds:[tagId],dueDate:'2026-12-10T12:30:00+01:00',deferDate:'2026-12-09T09:00:00+01:00',estimatedMinutes:15};
- const original=await mutate('create_task',args,key);const taskId=original.item.id;
- manifest.created.push({type:'task',id:taskId,deleted:false});await save();
+ const taskId=await created('create_task',args,'task',key);
  writer=createWriteExecutor({directory:ledger});
  const replay=await mutate('create_task',args,key);assert.equal(replay.item.id,taskId);
  const matching=await queryTasks({search:`${prefix} task`,limit:10});assert.equal(matching.tasks.filter(x=>x.id===taskId).length,1);
@@ -53,10 +43,8 @@ try {
  await remove('task',taskId);assert.equal((await getTask({taskId})).task,null);
  await remove('task',parentId);await remove('tag',secondTagId);await remove('tag',tagId);await remove('project',projectId);
  manifest.checks.push('all disposable items deleted and task absence read back');await save();
- console.log(JSON.stringify({ok:true,checks:manifest.checks,manifest:`${directory}/${run}.json`}));
+ console.log(JSON.stringify({ok:true,checks:manifest.checks,manifest:manifestPath}));
 } finally {
- for(const item of [...manifest.created].reverse()){
-  if(item.deleted)continue;
-  try{await remove(item.type,item.id);}catch{console.error(JSON.stringify({cleanupRequired:true,type:item.type,id:item.id,manifest:`${directory}/${run}.json`}));}
- }
+ try{const result=await fixture.cleanup();if(result.cleanupRequired)console.error(JSON.stringify(result));}
+ catch{console.error(JSON.stringify({cleanupRequired:true,reconciliationRequired:true,manifest:manifestPath}));}
 }

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWriteExecutor } from "../dist/remote/writeExecutor.js";
@@ -20,6 +20,13 @@ async function fixture(t) {
 function gate() {
   let release;
   return { promise: new Promise(resolve => { release = resolve; }), release: () => release() };
+}
+function failMethod(handle, method) {
+  return new Proxy(handle, { get(target, property) {
+    if (property === method) return async () => { throw new Error(`Injected ${method} failure`); };
+    const value = Reflect.get(target, property, target);
+    return typeof value === "function" ? value.bind(target) : value;
+  } });
 }
 
 test("durable same-key replay returns the exact result and changed arguments conflict", async t => {
@@ -129,6 +136,120 @@ test("a killed process leaves a durable pending claim which another process cann
   await closed;
   assert.equal((await executor.execute("create_tag", args)).outcome, "unknown");
   assert.equal(calls, 0);
+});
+
+test("two simultaneously released child processes claim one key and execute only one mutation", { timeout: 15000 }, async t => {
+  const { directory } = await fixture(t);
+  const moduleUrl = new URL("../dist/remote/writeExecutor.js", import.meta.url).href;
+  const code = `import {createWriteExecutor} from ${JSON.stringify(moduleUrl)};
+    process.send({ready:true});
+    process.once('message',async()=>{
+      const result=await createWriteExecutor({directory:process.argv[1],runner:async()=>{
+        process.send({mutation:true});
+        await new Promise(resolve=>process.once('message',resolve));
+        return ${JSON.stringify(JSON.stringify(goodResult))};
+      }}).execute('create_tag',${JSON.stringify(args)});
+      process.send({result},()=>process.disconnect());
+    });`;
+  let mutations = 0;
+  const children = [0, 1].map(() => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", code, directory], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+    t.after(() => child.kill("SIGKILL"));
+    let ready;
+    let done;
+    const readiness = new Promise(resolve => { ready = resolve; });
+    const result = new Promise((resolve, reject) => {
+      done = resolve;
+      child.once("error", reject);
+      child.once("exit", exitCode => { if (exitCode !== 0) reject(new Error(`Race child exited ${exitCode}`)); });
+    });
+    child.on("message", message => {
+      if (message.ready) ready();
+      if (message.mutation) mutations++;
+      if (message.result) {
+        done(message.result);
+        for (const other of children) if (other.child.connected) other.child.send("release", () => {});
+      }
+    });
+    return { child, readiness, result };
+  });
+  await Promise.all(children.map(child => child.readiness));
+  for (const { child } of children) child.send("start");
+  const results = await Promise.all(children.map(child => child.result));
+  assert.equal(mutations, 1);
+  assert.equal(results.filter(result => result.outcome === "succeeded").length, 1);
+  assert.ok(results.some(result => ["unknown", "rejected"].includes(result.outcome)));
+  let replayCalls = 0;
+  const restarted = createWriteExecutor({ directory, runner: async () => { replayCalls++; throw new Error("must not run twice"); } });
+  assert.equal((await restarted.execute("create_tag", args)).outcome, "succeeded");
+  assert.equal(replayCalls, 0);
+});
+
+test("durable filesystem boundary failures never execute a potentially applied mutation twice", async t => {
+  for (const phase of ["pending-write", "pending-sync", "pending-directory-sync", "finished-open", "finished-sync", "finished-rename", "finished-directory-sync"]) {
+    await t.test(phase, async t => {
+      const { directory } = await fixture(t);
+      const filename = join(directory, `${keyHash(args.idempotencyKey)}.json`);
+      let calls = 0;
+      let injected = false;
+      let claimed = false;
+      const io = {
+        open: async (path, ...options) => {
+          if (phase === "finished-open" && String(path).endsWith(".tmp")) { injected = true; throw new Error("Injected finished open failure"); }
+          const handle = await open(path, ...options);
+          if (path === filename && options.length > 1) claimed = true;
+          if (path === filename && options.length > 1 && ["pending-write", "pending-sync"].includes(phase)) {
+            injected = true;
+            return failMethod(handle, phase === "pending-write" ? "writeFile" : "sync");
+          }
+          if (phase === "finished-sync" && String(path).endsWith(".tmp")) { injected = true; return failMethod(handle, "sync"); }
+          if (claimed && path === directory && options.length === 1 && ((phase === "pending-directory-sync" && calls === 0)
+            || (phase === "finished-directory-sync" && calls === 1))) { injected = true; return failMethod(handle, "sync"); }
+          return handle;
+        },
+        ...(phase === "finished-rename" ? { rename: async () => { injected = true; throw new Error("Injected rename failure"); } } : {}),
+      };
+      const executor = createWriteExecutor({ directory, io, runner: async () => { calls++; return JSON.stringify(goodResult); } });
+      const first = await executor.execute("create_tag", args);
+      assert.equal(injected, true, `${phase} must reach the intended I/O failure`);
+      const beforeMutation = phase.startsWith("pending-");
+      assert.equal(first.outcome, beforeMutation ? "rejected" : "unknown");
+      assert.equal(calls, beforeMutation ? 0 : 1);
+      let restartedCalls = 0;
+      const restarted = createWriteExecutor({ directory, runner: async () => { restartedCalls++; return JSON.stringify(goodResult); } });
+      const replay = await restarted.execute("create_tag", args);
+      assert.equal(replay.outcome, phase === "pending-write" ? "rejected" : phase === "finished-directory-sync" ? "succeeded" : "unknown");
+      assert.equal(restartedCalls, 0);
+    });
+  }
+});
+
+test("changed task IDs require completion opt-in, a matching source and a completed result", async t => {
+  const completedTask = {
+    type: "task", id: "completed-occurrence", name: "Recurring task", nameTruncated: false,
+    flagged: false, completed: true, dueDate: null, deferDate: null, estimatedMinutes: null,
+    projectId: null, parentTaskId: null, inInbox: true, isRepeating: true,
+    sourceTaskId: "source-task", tagIds: [], tagsTruncated: false, noteLength: 0,
+  };
+  const request = { idempotencyKey: "recurrence-key", taskId: "source-task", completed: true, allowRepeatingCompletion: true };
+  for (const [description, input, item, outcome] of [
+    ["valid recurring completion", request, completedTask, "succeeded"],
+    ["wrong source", request, { ...completedTask, sourceTaskId: "unrelated-task" }, "unknown"],
+    ["missing source", request, { ...completedTask, sourceTaskId: undefined }, "unknown"],
+    ["no opt-in", { ...request, allowRepeatingCompletion: false }, completedTask, "unknown"],
+    ["not requested completion", { ...request, completed: false }, completedTask, "unknown"],
+    ["contradictory incomplete result", request, { ...completedTask, completed: false }, "unknown"],
+  ]) {
+    await t.test(description, async t => {
+      const { directory } = await fixture(t);
+      let calls = 0;
+      const runner = async () => { calls++; return JSON.stringify({ ok: true, item }); };
+      const executor = createWriteExecutor({ directory, runner });
+      assert.equal((await executor.execute("update_task", input)).outcome, outcome);
+      assert.equal((await createWriteExecutor({ directory, runner }).execute("update_task", input)).outcome, outcome);
+      assert.equal(calls, 1);
+    });
+  }
 });
 
 test("known not-applied results are replayed without executing again", async t => {

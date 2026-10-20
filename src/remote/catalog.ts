@@ -27,7 +27,12 @@ export function buildCatalogScript(input: unknown): string {
         result.status = match ? match[1] : 'unknown';
         result.parentId = item.parentFolder ? String(item.parentFolder.id.primaryKey) : null;
       }
-      if (args.kind === 'tags') result.parentId = item.parent ? String(item.parent.id.primaryKey) : null;
+      if (args.kind === 'tags') {
+        const values = [[Tag.Status.Active,'active'],[Tag.Status.OnHold,'onHold'],[Tag.Status.Dropped,'dropped']];
+        const match = values.find(value => value[0] === item.status);
+        result.status = match ? match[1] : 'unknown';
+      }
+      if (args.kind === 'tags' || args.kind === 'folders') result.parentId = item.parent ? String(item.parent.id.primaryKey) : null;
       return result;
     });
     return JSON.stringify({items, hasMore: filtered.length > items.length});

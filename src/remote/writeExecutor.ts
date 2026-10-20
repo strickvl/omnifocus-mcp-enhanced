@@ -68,14 +68,19 @@ function validateResult(operation: MutationName, args: MutationArgs, result: Mut
     const originalId = "taskId" in args ? args.taskId : "projectId" in args ? args.projectId : "tagId" in args ? args.tagId : undefined;
     if (item.id !== originalId && !(operation === "update_task" && item.type === "task"
       && "allowRepeatingCompletion" in args && args.allowRepeatingCompletion && "completed" in args && args.completed
-      && item.sourceTaskId === originalId)) throw new Error("Unexpected write result.");
+      && item.completed && item.sourceTaskId === originalId)) throw new Error("Unexpected write result.");
   }
 }
 
-export function createWriteExecutor(options: { directory: string; runner?: AutomationRunner }) {
+export function createWriteExecutor(options: {
+  directory: string; runner?: AutomationRunner;
+  io?: Partial<Pick<typeof import("node:fs/promises"), "open" | "rename">>;
+}) {
   if (!isAbsolute(options.directory) || options.directory.length > 1024) throw new Error("A valid absolute write ledger directory is required.");
   const directory = resolve(options.directory);
   const runner = options.runner ?? runOsascript;
+  const ledgerOpen = options.io?.open ?? open;
+  const ledgerRename = options.io?.rename ?? rename;
   let initialized = false;
 
   async function checkDirectory(create: boolean): Promise<void> {
@@ -88,7 +93,7 @@ export function createWriteExecutor(options: { directory: string; runner?: Autom
       // A newly created ledger must survive loss of any newly created parent directory.
       let current = directory;
       for (;;) {
-        const handle = await open(await realpath(current), constants.O_RDONLY | constants.O_NOFOLLOW);
+        const handle = await ledgerOpen(await realpath(current), constants.O_RDONLY | constants.O_NOFOLLOW);
         try { await handle.sync(); }
         finally { await handle.close(); }
         const parent = dirname(current);
@@ -100,14 +105,14 @@ export function createWriteExecutor(options: { directory: string; runner?: Autom
   }
 
   async function syncDirectory(): Promise<void> {
-    const handle = await open(directory, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const handle = await ledgerOpen(directory, constants.O_RDONLY | constants.O_NOFOLLOW);
     try { await handle.sync(); }
     finally { await handle.close(); }
   }
 
   async function load(keyHash: string): Promise<JournalRecord | null> {
     let handle;
-    try { handle = await open(join(directory, `${keyHash}.json`), constants.O_RDONLY | constants.O_NOFOLLOW); }
+    try { handle = await ledgerOpen(join(directory, `${keyHash}.json`), constants.O_RDONLY | constants.O_NOFOLLOW); }
     catch (error) { if (hasCode(error, "ENOENT")) return null; throw error; }
     try {
       const info = await handle.stat();
@@ -125,7 +130,7 @@ export function createWriteExecutor(options: { directory: string; runner?: Autom
   async function claim(record: JournalRecord): Promise<boolean> {
     let handle;
     try {
-      handle = await open(join(directory, `${record.keyHash}.json`), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+      handle = await ledgerOpen(join(directory, `${record.keyHash}.json`), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     } catch (error) { if (hasCode(error, "EEXIST")) return false; throw error; }
     try {
       await handle.writeFile(JSON.stringify(record), "utf8");
@@ -137,13 +142,13 @@ export function createWriteExecutor(options: { directory: string; runner?: Autom
 
   async function finish(record: JournalRecord): Promise<void> {
     const temporary = join(directory, `.${record.keyHash}.${randomUUID()}.tmp`);
-    const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    const handle = await ledgerOpen(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     try {
       await handle.writeFile(JSON.stringify(record), "utf8");
       await handle.sync();
       await handle.close();
       await checkDirectory(false);
-      await rename(temporary, join(directory, `${record.keyHash}.json`));
+      await ledgerRename(temporary, join(directory, `${record.keyHash}.json`));
       await syncDirectory();
     } finally {
       await handle.close();

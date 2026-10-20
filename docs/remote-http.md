@@ -4,7 +4,7 @@ The HTTP server supports task, project, and tag management for remote MCP client
 
 ## Installation
 
-Use Node 22 or later. Run `npm ci`, `npm test`, and `npm audit --omit=dev`. Start with `OMNIFOCUS_HTTP_CONFIG=/absolute/private/http.json npm run start:http`. The config must be owned by the running user with mode 600. The listener binds only to `127.0.0.1`, default port 8787. Keep credentials, config, write journals, and logs outside the checkout.
+Use Node 22 or later. Run `npm ci`, `npm run lint`, `npm test`, and `npm audit`. Start with `OMNIFOCUS_HTTP_CONFIG=/absolute/private/http.json npm run start:http`. The config must be owned by the running user with mode 600. The listener binds only to `127.0.0.1`, default port 8787. Keep credentials, config, write journals, and logs outside the checkout.
 
 Example Cloudflare configuration:
 
@@ -41,13 +41,15 @@ For loopback testing only, use `auth: { "mode": "local-bearer", "token": "<64 ra
 | `delete_item` | Delete an exact task/project/tag ID; matching `confirmId` required; nonempty items require `includeChildren=true` |
 | `get_write_status` | Inspect a durable write outcome after a timeout or retry |
 
+`list_items` includes folder parent IDs and tag status so clients can distinguish nested duplicate names and verify tag updates.
+
 The first three tools are available in read-only mode. Write mode adds the other eight. No arbitrary-script tool or unlimited database dump is exposed. Bulk work uses bounded individual calls; a group of calls is not atomic.
 
 Task reads default to 20 results, maximum 100, with a 100,000-character JSON budget. Names, tags and notes have explicit truncation flags; `hasMore` signals omitted matches. There is no pagination cursor. Dates require ISO 8601 with `Z` or a UTC offset. `null` clears nullable date/placement fields; omitted fields remain unchanged. Tag arrays replace existing tags, so read the current task before combining tag assignments.
 
 `perspectiveId` reads the matching custom perspective through an open OmniFocus window's content tree. It temporarily selects the perspective and restores the previous one in `finally`, without expanding nodes or changing tasks. Results follow the content tree and its existing view filters; this is not a separate interpreter of archived perspective rules.
 
-Task tools reject project-root task IDs: use project tools to change a project. Completing a repeating task can create its next occurrence. `allowRepeatingCompletion=true` explicitly permits that behavior, including repeating ancestors completed automatically by their children. Without opt-in those completion operations are rejected before mutations. Completion does not configure or alter recurrence rules.
+Task mutation tools reject project-root task IDs: use project tools to change a project. `get_task` can read a project-root task. Completing a repeating task can create its next occurrence. `allowRepeatingCompletion=true` explicitly permits that behavior, including repeating ancestors completed automatically by their children. Without opt-in those completion operations are rejected before mutations. Completion does not configure or alter recurrence rules.
 
 ## Write outcomes and retries
 
@@ -73,8 +75,10 @@ Use a user LaunchAgent for the bridge, with an absolute Node path and explicit `
 
 Deploy an exact Git revision from `main`, run `npm ci`, build/tests and audit, then point the LaunchAgent to that checkout. Retain the previous checkout/config for rollback. Do not copy secrets into the repository or commit a runtime ledger.
 
-`npm test` uses fixtures and never modifies live OmniFocus. It covers escaping, filters, custom perspective restoration, bounds, queue serialization, permissions, auth failures, JWT claims, read-only tool rejection, write annotations, deletion validation, durable retries/conflicts, uncertain outcomes, cross-process claims and SIGKILL recovery.
+`npm test` uses fixtures and never modifies live OmniFocus. It covers escaping, strict MCP filters, custom perspective restoration, catalog identity context, bounds, queue serialization, HTTP admission/disconnect cleanup, permissions, auth failures, JWT claims, read-only tool rejection, write annotations, deletion validation, durable retries/conflicts, filesystem failure boundaries, simultaneous cross-process claims, SIGKILL recovery, and fixture recovery manifests. These fixture tests do not establish actual OmniFocus recurrence, physical power-loss durability, reboot recovery, or long-lived OAuth refresh.
 
-For an explicitly authorized live test only: `OMNIFOCUS_TEST_DIRECTORY=/absolute/private/verification node scripts/verify-write-fixture.mjs`. It creates uniquely named disposable projects/tags/tasks, reads back changes, checks replay, moves/completes/reopens tasks, and removes the items it created. A private manifest records cleanup state. No pre-existing item is selected for mutation. If the process is killed or creation returns an unknown outcome, inspect the unique fixture prefix and manifest before repeating or cleaning up.
+`npm run lint` uses pinned Oxlint correctness rules on the remote server, tests, and verification scripts, with type-aware unhandled-promise checks for remote TypeScript. The Node test runner owns top-level test-registration promises, so that rule is not applied to test files. `npm run typecheck` runs strict TypeScript checking without emitting files; `npm test` also type-checks as part of its build.
+
+For an explicitly authorized live test only: `OMNIFOCUS_TEST_DIRECTORY=/absolute/private/verification node scripts/verify-write-fixture.mjs`. It creates uniquely named disposable projects/tags/tasks, reads back changes, checks replay, moves/completes/reopens tasks, and removes the items it created. A private manifest saves the run prefix and each exact operation, arguments, and stable key before execution, then records the result and created IDs. Unknown outcomes or manifest persistence failures stop further writes, including cascading cleanup. Keep that manifest and journal for manual reconciliation. No pre-existing item is selected for mutation. If the process is killed or creation returns an unknown outcome, inspect the unique fixture prefix and manifest before repeating or cleaning up.
 
 References: [Cloudflare Managed OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/), [Cloudflare JWT verification](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/), [OpenAI authentication](https://developers.openai.com/plugins/build/auth), [Claude authentication](https://claude.com/docs/connectors/building/authentication), [OmniFocus Task API](https://omni-automation.com/omnifocus/task.html).

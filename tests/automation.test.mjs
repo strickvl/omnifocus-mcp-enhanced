@@ -162,7 +162,8 @@ test("real child processes time out, bound output, and suppress child diagnostic
 });
 
 test("MCP server exposes exactly two annotated read-only tools without importing legacy registrations", async () => {
-  const server = createReadOnlyServer({ runner: runnerFor([task("one")]) });
+  let runnerCalls = 0;
+  const server = createReadOnlyServer({ runner: runnerFor([task("one")], () => { runnerCalls++; }) });
   const client = new Client({ name: "read-only-tests", version: "1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
@@ -178,8 +179,15 @@ test("MCP server exposes exactly two annotated read-only tools without importing
     }
     const result = await client.callTool({ name: "get_task", arguments: { taskId: "one" } });
     assert.equal(JSON.parse(result.content[0].text).task.id, "one");
+    const queryTool = tools.find(tool => tool.name === "query_tasks");
+    assert.equal(queryTool.inputSchema.additionalProperties, false);
+    const callsBeforeInvalid = runnerCalls;
+    const rejected = await client.callTool({ name: "query_tasks", arguments: { perspectiveID: "perspective-1" } });
+    assert.equal(rejected.isError, true);
+    assert.equal(runnerCalls, callsBeforeInvalid, "unknown perspectiveID must reject before automation");
     const invalid = await client.callTool({ name: "query_tasks", arguments: { dueFrom: "2026-10-21T00:00:00Z", dueTo: "2026-10-20T00:00:00Z" } });
     assert.equal(invalid.isError, true);
+    assert.equal(runnerCalls, callsBeforeInvalid, "reversed dates must reject before automation");
   } finally {
     await client.close();
     await server.close();

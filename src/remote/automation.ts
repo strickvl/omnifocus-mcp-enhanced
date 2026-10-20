@@ -20,7 +20,8 @@ export const queryShape = {
   limit: z.number().int().min(1).max(100).default(20),
   includeNotes: z.boolean().default(false),
 };
-export const querySchema = z.object(queryShape).strict().refine(
+export const queryInputSchema = z.object(queryShape).strict();
+export const querySchema = queryInputSchema.refine(
   args => !args.dueFrom || !args.dueTo || Date.parse(args.dueFrom) <= Date.parse(args.dueTo),
   { message: "dueFrom must be before or equal to dueTo", path: ["dueTo"] },
 );

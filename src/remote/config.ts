@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isAbsolute, relative } from 'node:path';
+import { isAbsolute, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const publicUrl = z.string().url().refine(value => {
@@ -26,7 +26,7 @@ export const configSchema = z.object({
 }).strict().superRefine((config, context) => {
   if (config.ledgerDirectory) {
     const path = relative(fileURLToPath(new URL('../../', import.meta.url)), config.ledgerDirectory);
-    if (path === '' || (!path.startsWith('..') && !isAbsolute(path))) context.addIssue({code:z.ZodIssueCode.custom,path:['ledgerDirectory'],message:'Write ledger must be outside the repository'});
+    if (path === '' || (path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path))) context.addIssue({code:z.ZodIssueCode.custom,path:['ledgerDirectory'],message:'Write ledger must be outside the repository'});
   }
   if (config.access === 'read-write' && !config.ledgerDirectory) context.addIssue({code:z.ZodIssueCode.custom,path:['ledgerDirectory'],message:'Writes require a durable private ledger directory'});
 });

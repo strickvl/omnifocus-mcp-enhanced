@@ -48,24 +48,32 @@ export function createHttpApp(input: Config, dependencies: {
     res.once('close', () => { inFlight--; });
     next();
   }, express.json({ limit: '64kb', strict: true }), async (req, res) => {
-    const server = dependencies.createServer ? dependencies.createServer() : createRemoteServer({writer});
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     const started = Date.now();
-    res.once('close', () => { void transport.close(); void server.close(); });
     try {
+      const server = dependencies.createServer ? dependencies.createServer() : createRemoteServer({writer});
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+      res.once('close', () => {
+        for (const resource of [transport, server]) {
+          void Promise.resolve().then(() => resource.close()).catch(() => {
+            console.error(JSON.stringify({ event: 'mcp_cleanup_failed' }));
+          });
+        }
+      });
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch {
-      if (!res.headersSent) res.status(500).json({ error: 'Request failed' });
+      if (!res.headersSent && !res.destroyed) res.status(500).json({ error: 'Request failed' });
     } finally {
       // Task arguments, results, assertions and tokens must never enter ordinary logs.
       console.error(JSON.stringify({ event: 'mcp_request', subject: res.locals.identity, status: res.statusCode, durationMs: Date.now() - started }));
     }
   });
   app.all('/mcp', (_req, res) => { res.set('Allow', 'POST').status(405).end(); });
-  const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
-    const status = error?.type === 'entity.too.large' ? 413 : 400;
-    res.status(status).json({ error: status === 413 ? 'Request too large' : 'Invalid request' });
+  const errorHandler: ErrorRequestHandler = (error: unknown, _req, res, next) => {
+    if (res.headersSent) { next(error); return; }
+    const type = typeof error === 'object' && error !== null && 'type' in error ? error.type : undefined;
+    const status = type === 'entity.too.large' ? 413 : type === 'entity.parse.failed' ? 400 : 500;
+    res.status(status).json({ error: status === 413 ? 'Request too large' : status === 400 ? 'Invalid request' : 'Request failed' });
   };
   app.use(errorHandler);
   return app;

@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { request } from 'node:http';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function fetch(url, options = {}) {
   return new Promise((resolve, reject) => {
@@ -85,9 +87,52 @@ test('Cloudflare assertion verifies signature, issuer, audience, expiry and exac
       assert.equal(response.status,401);
       assert.match(response.headers.get('www-authenticate'),/resource_metadata/);
     }
+    const claims = {type:'app', email:'alex@example.com', sub:'alex', iss:config.auth.issuer, aud:'aud', iat:Math.floor(Date.now()/1000), exp:Math.floor(Date.now()/1000)+300};
+    const otherKey = await generateKeyPair('RS256');
+    const cases = [['wrong signature', claims, otherKey.privateKey], ['future nbf', {...claims, nbf:Math.floor(Date.now()/1000)+300}, privateKey]];
+    for (const claim of ['exp','iat','sub','email','iss','aud']) {
+      const missing = {...claims}; delete missing[claim];
+      cases.push([`missing ${claim}`, missing, privateKey]);
+    }
+    for (const [name, payload, signingKey] of cases) {
+      const jwt = await new SignJWT(payload).setProtectedHeader({alg:'RS256',kid:'test'}).sign(signingKey);
+      const rejected = await fetch(`${url}/mcp`, {method:'POST',headers:{...headers,host:'focus.example.com','cf-access-jwt-assertion':jwt},body:rpc('tools/list')});
+      assert.equal(rejected.status,401,name);
+    }
     const valid=await fetch(`${url}/mcp`,{method:'POST',headers:{...headers,host:'focus.example.com','cf-access-jwt-assertion':await sign()},body:rpc('tools/list')});
     assert.equal(valid.status,200);
     const again=await fetch(`${url}/mcp`,{method:'POST',headers:{...headers,host:'focus.example.com'},body:rpc('tools/list')});
     assert.equal(again.status,401);
+  });
+});
+
+
+test('write ledger rejects every repository descendant but permits sibling directories', () => {
+  const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  for (const directory of [repository, resolve(repository, 'ledger'), resolve(repository, '..ledger'), resolve(repository, '..ledger/nested')]) {
+    assert.equal(configSchema.safeParse({...local, access:'read-write', ledgerDirectory:directory}).success, false, directory);
+  }
+  for (const directory of [resolve(repository, '../private-ledger'), `${repository}-ledger`]) {
+    assert.equal(configSchema.safeParse({...local, access:'read-write', ledgerDirectory:directory}).success, true, directory);
+  }
+});
+
+test('server construction failures return a safe internal error', async () => {
+  await serve(local, {createServer() { throw new Error('private construction details'); }}, async url => {
+    const response = await fetch(`${url}/mcp`, {method:'POST', headers, body:rpc('tools/list')});
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), {error:'Request failed'});
+  });
+});
+
+
+test('key resolver rejection fails authentication without exposing resolver details', async () => {
+  const {privateKey} = await generateKeyPair('RS256');
+  const jwt = await new SignJWT({}).setProtectedHeader({alg:'RS256'}).sign(privateKey);
+  const config = {port:8787,auth:{mode:'cloudflare',publicUrl:'https://focus.example.com/mcp',issuer:'https://team.cloudflareaccess.com',audience:'aud',allowedEmail:'alex@example.com'}};
+  await serve(config,{key:async()=>{throw new Error('private resolver details');}},async url=>{
+    const response = await fetch(`${url}/mcp`,{method:'POST',headers:{...headers,host:'focus.example.com','cf-access-jwt-assertion':jwt},body:rpc('tools/list')});
+    assert.equal(response.status,401);
+    assert.deepEqual(await response.json(),{error:'Authentication required'});
   });
 });

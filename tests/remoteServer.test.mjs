@@ -50,7 +50,36 @@ test('write mode needs an external ledger directory and read-only remains the de
 test('catalog performs bounded exact-ID reads with literal names',()=>{
  const items=Array.from({length:4},(_,index)=>({id:{primaryKey:`id${index}`},name:`quoted " item ${index}`,parent:null}));
  const script=buildCatalogScript({kind:'tags',search:'quoted "',limit:2});
- const scope={Application:()=>({evaluateJavascript:code=>vm.runInNewContext(code,{flattenedTags:items})})};
+ const scope={Application:()=>({evaluateJavascript:code=>vm.runInNewContext(code,{flattenedTags:items,Tag:{Status:{Active:'active',OnHold:'onHold',Dropped:'dropped'}}})})};
  const data=JSON.parse(vm.runInNewContext(script+';run()',scope));
  assert.equal(data.items.length,2);assert.equal(data.hasMore,true);assert.equal(data.items[0].id,'id0');assert.equal(data.items[0].name,'quoted " item 0');
+});
+
+
+test('read-only remote catalog preserves every kind contract through MCP', async () => {
+ const parent = {id:{primaryKey:'parent'}};
+ const cases = [
+  ['projects', {id:{primaryKey:'project'},name:'Project',parentFolder:parent,status:'Done'}, {id:'project',name:'Project',nameTruncated:false,parentId:'parent',status:'done'}],
+  ['tags', {id:{primaryKey:'tag'},name:'Tag',parent,status:'OnHold'}, {id:'tag',name:'Tag',nameTruncated:false,parentId:'parent',status:'onHold'}],
+  ['folders', {id:{primaryKey:'folder'},name:'Folder',parent}, {id:'folder',name:'Folder',nameTruncated:false,parentId:'parent'}],
+  ['perspectives', {identifier:'perspective',name:'Perspective'}, {id:'perspective',name:'Perspective',nameTruncated:false}],
+ ];
+ const runtime = {
+  flattenedProjects:[cases[0][1]],flattenedTags:[cases[1][1]],flattenedFolders:[cases[2][1]],
+  Project:{Status:{Active:'Active',OnHold:'OnHold',Done:'Done',Dropped:'Dropped'}},
+  Tag:{Status:{Active:'Active',OnHold:'OnHold',Dropped:'Dropped'}},
+  Perspective:{Custom:{all:[cases[3][1]]}},
+ };
+ const runner = async script => vm.runInNewContext(script+';run()',{
+  Application:()=>({evaluateJavascript:code=>vm.runInNewContext(code,runtime)}),
+ });
+ await connection(createRemoteServer({runner}),async client=>{
+  const {tools}=await client.listTools();
+  assert.deepEqual(tools.map(tool=>tool.name).sort(),['get_task','list_items','query_tasks']);
+  for(const [kind,,expected] of cases){
+   const result=await client.callTool({name:'list_items',arguments:{kind}});
+   assert.notEqual(result.isError,true,kind);
+   assert.deepEqual(JSON.parse(result.content[0].text),{items:[expected],hasMore:false},kind);
+  }
+ });
 });

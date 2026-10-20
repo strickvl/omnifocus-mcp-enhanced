@@ -1,7 +1,7 @@
 name: Verify MCP server
 on:
   push:
-    branches: [main, remote-task-management]
+    branches: [main, remote-task-management, remote-hardening]
   pull_request:
 permissions:
   contents: read
@@ -15,5 +15,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run lint
       - run: npm test
       - run: npm audit --omit=dev
