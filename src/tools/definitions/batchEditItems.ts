@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { batchEditItems, BatchEditItemsParams } from '../primitives/batchEditItems.js';
-import { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 
 // Item schema matches editItem schema exactly
 const editItemSchema = z.object({
@@ -42,7 +41,7 @@ export const schema = z.object({
   items: z.array(editItemSchema).describe("Array of items (tasks or projects) to edit with their new values")
 });
 
-export async function handler(args: z.infer<typeof schema>, extra: RequestHandlerExtra) {
+export async function handler(args: z.infer<typeof schema>) {
   try {
     // Validate that each item has at least an ID or name
     for (const item of args.items) {

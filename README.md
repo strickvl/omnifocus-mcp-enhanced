@@ -1,8 +1,10 @@
+Remote deployment: [authenticated HTTP server and task management](docs/remote-http.md). Requires Node 22 or later. The HTTP endpoint defaults to read-only; write access is enabled explicitly in private configuration.
+
 # 🚀 OmniFocus MCP Enhanced
 
 [![npm version](https://img.shields.io/npm/v/omnifocus-mcp-enhanced.svg)](https://www.npmjs.com/package/omnifocus-mcp-enhanced)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js CI](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)](https://nodejs.org/)
+[![Node.js CI](https://img.shields.io/badge/node-%3E%3D22.0.0-brightgreen.svg)](https://nodejs.org/)
 [![macOS](https://img.shields.io/badge/macOS-only-blue.svg)](https://www.apple.com/macos/)
 
 > **🌟 NEW: Native Custom Perspective Access with Hierarchical Display!**
@@ -58,7 +60,7 @@ claude mcp add omnifocus-enhanced -- node "/path/to/omnifocus-mcp-enhanced/dist/
 - **macOS 10.15+** - OmniFocus is macOS-only
 - **OmniFocus 3+** - The application must be installed and running
 - **OmniFocus Pro** - Required for custom perspectives (new features in v1.6.0)
-- **Node.js 18+** - For running the MCP server
+- **Node.js 22+** - For running the MCP server
 - **Claude Code** - For MCP integration
 
 ## 🎯 Core Capabilities
@@ -304,7 +306,7 @@ list_custom_perspectives
 
 ### Troubleshooting
 - Ensure OmniFocus 3+ is installed and running
-- Verify Node.js 18+ is installed
+- Verify Node.js 22+ is installed
 - Check Claude Code MCP configuration
 - Enable accessibility permissions for terminal apps if needed
 

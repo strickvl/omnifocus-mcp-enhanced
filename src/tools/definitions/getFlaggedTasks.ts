@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { getFlaggedTasks } from '../primitives/getFlaggedTasks.js';
-import { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 
 // Task status enum for filtering
 const TaskStatusEnum = z.enum([
@@ -64,7 +63,7 @@ export const schema = z.object({
     .describe("Sort order (default: asc)")
 });
 
-export async function handler(args: z.infer<typeof schema>, extra: RequestHandlerExtra) {
+export async function handler(args: z.infer<typeof schema>) {
   try {
     const result = await getFlaggedTasks({
       // Basic filters

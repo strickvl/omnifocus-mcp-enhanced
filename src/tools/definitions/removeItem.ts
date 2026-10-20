@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { removeItem, RemoveItemParams } from '../primitives/removeItem.js';
-import { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 
 export const schema = z.object({
   id: z.string().optional().describe("The ID of the task or project to remove"),
@@ -8,7 +7,7 @@ export const schema = z.object({
   itemType: z.enum(['task', 'project']).describe("Type of item to remove ('task' or 'project')")
 });
 
-export async function handler(args: z.infer<typeof schema>, extra: RequestHandlerExtra) {
+export async function handler(args: z.infer<typeof schema>) {
   try {
     // Validate that either id or name is provided
     if (!args.id && !args.name) {
