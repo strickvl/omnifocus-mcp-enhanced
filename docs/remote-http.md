@@ -17,13 +17,15 @@ Example Cloudflare configuration:
     "mode": "cloudflare",
     "issuer": "https://your-team.cloudflareaccess.com",
     "audience": "YOUR_ACCESS_APPLICATION_AUD",
-    "allowedEmail": "you@example.com",
+    "allowedEmails": ["you@example.com", "your-alias@example.net"],
     "publicUrl": "https://focus.example.com/mcp"
   }
 }
 ```
 
 `access` defaults to `read-only`; write mode requires an absolute private ledger directory outside the repository. The ledger directory must be mode 700 and owned by the service user. Each record is mode 600. Do not delete or expire ledger records while retry protection is needed.
+
+`auth.allowedEmails` requires 1–20 exact verified email addresses. Keep this list aligned with the intended identities in the Cloudflare Access policy: an identity must pass both checks. Email matching is case-sensitive, with no alias, whitespace, domain, or wildcard expansion. When upgrading from `auth.allowedEmail`, replace that field with `auth.allowedEmails: ["the-existing-address"]` and deploy the matching code and configuration together. The old field and mixed old/new fields are rejected. For rollback, restore the matching prior code and configuration while retaining the current write ledger.
 
 For loopback testing only, use `auth: { "mode": "local-bearer", "token": "<64 random lowercase hexadecimal characters>" }`. Every MCP request then requires that bearer token. Switch to Cloudflare mode before configuring public tunnel ingress.
 

@@ -35,7 +35,7 @@ test('config fails closed without auth, exact identity, or canonical URL', () =>
   assert.equal(configSchema.safeParse({}).success, false);
   assert.equal(configSchema.safeParse({ auth: { mode: 'local-bearer', token: 'short' } }).success, false);
   for (const publicUrl of ['http://example.com/mcp', 'https://example.com/', 'https://user@example.com/mcp', 'https://example.com/mcp?x=1']) {
-    assert.equal(configSchema.safeParse({ auth: { mode: 'cloudflare', publicUrl, issuer: 'https://team.cloudflareaccess.com', audience: 'aud', allowedEmail: 'alex@example.com' } }).success, false);
+    assert.equal(configSchema.safeParse({ auth: { mode: 'cloudflare', publicUrl, issuer: 'https://team.cloudflareaccess.com', audience: 'aud', allowedEmails: ['alex@example.com'] } }).success, false);
   }
 });
 
@@ -71,7 +71,7 @@ test('local authentication, host/origin checks, body limits, and write rejection
 test('Cloudflare assertion verifies signature, issuer, audience, expiry and exact email on every request', async () => {
   const {privateKey,publicKey}=await generateKeyPair('RS256');
   const jwk=await exportJWK(publicKey); jwk.kid='test';
-  const config={port:8787,auth:{mode:'cloudflare',publicUrl:'https://focus.example.com/mcp',issuer:'https://team.cloudflareaccess.com',audience:'aud',allowedEmail:'alex@example.com'}};
+  const config={port:8787,auth:{mode:'cloudflare',publicUrl:'https://focus.example.com/mcp',issuer:'https://team.cloudflareaccess.com',audience:'aud',allowedEmails:['alex@example.com']}};
   async function sign(overrides={}) {
     return new SignJWT({type:'app',email:'alex@example.com',...overrides})
       .setProtectedHeader({alg:'RS256',kid:'test'}).setIssuedAt().setSubject('alex')
@@ -129,10 +129,31 @@ test('server construction failures return a safe internal error', async () => {
 test('key resolver rejection fails authentication without exposing resolver details', async () => {
   const {privateKey} = await generateKeyPair('RS256');
   const jwt = await new SignJWT({}).setProtectedHeader({alg:'RS256'}).sign(privateKey);
-  const config = {port:8787,auth:{mode:'cloudflare',publicUrl:'https://focus.example.com/mcp',issuer:'https://team.cloudflareaccess.com',audience:'aud',allowedEmail:'alex@example.com'}};
+  const config = {port:8787,auth:{mode:'cloudflare',publicUrl:'https://focus.example.com/mcp',issuer:'https://team.cloudflareaccess.com',audience:'aud',allowedEmails:['alex@example.com']}};
   await serve(config,{key:async()=>{throw new Error('private resolver details');}},async url=>{
     const response = await fetch(`${url}/mcp`,{method:'POST',headers:{...headers,host:'focus.example.com','cf-access-jwt-assertion':jwt},body:rpc('tools/list')});
     assert.equal(response.status,401);
     assert.deepEqual(await response.json(),{error:'Authentication required'});
   });
+});
+
+test('Cloudflare accepts each explicitly allowed email and rejects every other identity', async () => {
+  const {privateKey, publicKey} = await generateKeyPair('RS256');
+  const jwk = await exportJWK(publicKey); jwk.kid = 'allowlist';
+  const allowedEmails = ['primary@example.com', 'alias@example.net'];
+  const config = {port:8787, auth:{mode:'cloudflare', publicUrl:'https://focus.example.com/mcp', issuer:'https://team.cloudflareaccess.com', audience:'aud', allowedEmails}};
+  await serve(config, {key:createLocalJWKSet({keys:[jwk]})}, async url => {
+    for (const [email, expected] of [...allowedEmails.map(email => [email, 200]), ['other@example.com', 401], ['alias@example.net.evil', 401], ['ALIAS@example.net', 401], [' alias@example.net ', 401], [allowedEmails, 401], [null, 401]]) {
+      const jwt = await new SignJWT({type:'app', email}).setProtectedHeader({alg:'RS256',kid:'allowlist'})
+        .setIssuedAt().setSubject('test-user').setIssuer(config.auth.issuer).setAudience('aud').setExpirationTime('5m').sign(privateKey);
+      const response = await fetch(`${url}/mcp`, {method:'POST', headers:{...headers, host:'focus.example.com', 'cf-access-jwt-assertion':jwt}, body:rpc('tools/list')});
+      assert.equal(response.status, expected, JSON.stringify(email));
+    }
+  });
+  assert.equal(configSchema.safeParse(config).success, true);
+  for (const allowedEmails of [undefined, [], ['*'], ['bad-address'], Array(21).fill('a@example.com')]) {
+    assert.equal(configSchema.safeParse({...config, auth:{...config.auth, allowedEmails}}).success, false);
+  }
+  assert.equal(configSchema.safeParse({...config, auth:{...config.auth, allowedEmails:undefined, allowedEmail:'primary@example.com'}}).success, false);
+  assert.equal(configSchema.safeParse({...config, auth:{...config.auth, allowedEmail:'primary@example.com'}}).success, false);
 });

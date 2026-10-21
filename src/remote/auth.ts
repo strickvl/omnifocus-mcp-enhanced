@@ -22,7 +22,7 @@ export function createAuthenticator(config: Config, testKey?: JWTVerifyGetKey) {
         algorithms: ['RS256'], issuer: auth.issuer, audience: auth.audience,
         requiredClaims: ['exp', 'iat', 'sub', 'email'], clockTolerance: 5,
       });
-      if (payload.type !== 'app' || payload.email !== auth.allowedEmail) return null;
+      if (payload.type !== 'app' || typeof payload.email !== 'string' || !auth.allowedEmails.includes(payload.email)) return null;
       return String(payload.sub);
     } catch {
       return null;

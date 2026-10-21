@@ -13,7 +13,7 @@ const auth = z.discriminatedUnion('mode', [
     mode: z.literal('cloudflare'),
     issuer: z.string().regex(/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/),
     audience: z.string().min(1).max(256),
-    allowedEmail: z.string().email(),
+    allowedEmails: z.array(z.string().email()).min(1).max(20),
     publicUrl,
   }).strict(),
 ]);
