@@ -13,7 +13,7 @@
     "start": "node dist/server.js",
     "dev": "tsc -w",
     "prepublishOnly": "npm run build",
-    "test": "npm run build && node --test tests/*.test.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs scripts/mini-reliability/*.test.mjs",
     "start:http": "node dist/remote/main.js",
     "lint": "oxlint --deny-warnings src/remote tests scripts",
     "typecheck": "tsc --noEmit"

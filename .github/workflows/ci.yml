@@ -1,7 +1,7 @@
 name: Verify MCP server
 on:
   push:
-    branches: [main, remote-task-management, remote-hardening]
+    branches: [main, remote-task-management, remote-hardening, mini-reliability-20261021]
   pull_request:
 permissions:
   contents: read

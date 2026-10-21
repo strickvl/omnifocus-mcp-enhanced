@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.strickvl.omnifocus-log-rotation</string>
+<key>ProgramArguments</key><array><string>/opt/homebrew/bin/node</string><string>/Users/noor/.config/omnifocus-mcp/ops-reliability-20261021/rotate-logs.mjs</string></array>
+<key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>15</integer></dict>
+<key>LimitLoadToSessionType</key><string>Aqua</string>
+<key>ProcessType</key><string>Background</string>
+<key>StandardOutPath</key><string>/Users/noor/Library/Logs/OmniFocusMCP/stdout.log</string>
+<key>StandardErrorPath</key><string>/Users/noor/Library/Logs/OmniFocusMCP/stderr.log</string>
+<key>Umask</key><integer>63</integer>
+</dict></plist>

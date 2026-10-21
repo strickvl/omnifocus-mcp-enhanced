@@ -49,6 +49,10 @@ interface Job { run: () => Promise<unknown>; resolve: (value: unknown) => void; 
 const pending: Job[] = [];
 let running = false;
 
+export function isAutomationIdle(): boolean {
+  return !running && pending.length === 0;
+}
+
 function execute(job: Job): void {
   running = true;
   void job.run().then(job.resolve, () => job.reject(new Error(ERROR_MESSAGE))).finally(() => {

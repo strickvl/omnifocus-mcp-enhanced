@@ -289,6 +289,7 @@ test("insecure directories, symlinks, corrupt records and altered checksums cann
   let calls = 0;
   const runner = async () => { calls++; return JSON.stringify(goodResult); };
   await mkdir(directory, { mode: 0o755 });
+  await chmod(directory, 0o755);
   assert.equal((await createWriteExecutor({ directory, runner }).execute("create_tag", args)).errorCode, "LEDGER_UNAVAILABLE");
   await chmod(directory, 0o700);
   const executor = createWriteExecutor({ directory, runner });
